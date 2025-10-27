@@ -1,6 +1,5 @@
 name: dbsimilarity
-channels:
-  - conda-forge
+channels: [conda-forge]
 dependencies:
   - python=3.11
   - rdkit=2025.09.1
