@@ -40,12 +40,10 @@ import streamlit as st
 # --- Chemistry deps (guarded) ---
 try:
     from rdkit import Chem
-    from rdkit.Chem import AllChem, Descriptors
-    from rdkit.Chem.Draw import MolToImage
 except Exception as e:
-    st.stop()  # hard stop if RDKit isn't present
-
-
+    import streamlit as st
+    st.error("RDKit failed to import. This app requires the conda environment.yml (Python 3.11 + rdkit).")
+    st.stop()
 
 
 # Mordred depends on RDKit; import it only after RDKit succeeded
@@ -1304,6 +1302,7 @@ st.markdown(
 # scikit-learn
 # scipy
 # matplotlib
+
 
 
 
