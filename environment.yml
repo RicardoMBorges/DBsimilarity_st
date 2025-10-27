@@ -5,7 +5,7 @@ dependencies:
   - python=3.11
   - rdkit>=2025.09
   - pandas>=2.3
-  - numpy>=1.26
+  - numpy>=1.26,<3
   - scikit-learn>=1.5
   - scipy>=1.12
   - matplotlib>=3.8
@@ -15,6 +15,6 @@ dependencies:
   - xlsxwriter
   - pip
   - pip:
+      - streamlit>=1.38
       - mordred
-      - mpld3  # if you want interactive dendrogram export
-      # (streamlit is preinstalled on Streamlit Cloud; include it locally if needed)
+      - mpld3
