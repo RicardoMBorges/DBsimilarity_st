@@ -3,17 +3,18 @@ channels:
   - conda-forge
 dependencies:
   - python=3.11
-  - rdkit>=2024         # conda-forge build
-  - numpy<2.4           # matches rdkit/scipy stack
-  - pandas
-  - scipy
-  - scikit-learn
-  - matplotlib
-  - networkx
+  - rdkit>=2025.09
+  - pandas>=2.3
+  - numpy>=1.26
+  - scikit-learn>=1.5
+  - scipy>=1.12
+  - matplotlib>=3.8
+  - networkx>=3.2
+  - plotly>=5.20
+  - pillow
+  - xlsxwriter
   - pip
   - pip:
-      - streamlit>=1.38
-      - plotly
       - mordred
-      - xlsxwriter
-      - mpld3
+      - mpld3  # if you want interactive dendrogram export
+      # (streamlit is preinstalled on Streamlit Cloud; include it locally if needed)
