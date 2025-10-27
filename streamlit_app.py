@@ -23,6 +23,18 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+try:
+    from rdkit import Chem
+    from rdkit.Chem import PandasTools
+except Exception as e:
+    st.error(
+        "RDKit failed to import. Make sure `rdkit-pypi` is in requirements.txt and "
+        "your `runtime.txt` pins Python to 3.11 on Streamlit Cloud.\n\n"
+        f"Details: {e!r}"
+    )
+    st.stop()
+
+
 # Core chem
 from rdkit import Chem
 from rdkit.Chem import AllChem
