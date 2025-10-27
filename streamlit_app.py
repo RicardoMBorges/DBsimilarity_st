@@ -15,35 +15,41 @@
 # ------------------------------------------------
 
 from __future__ import annotations
-import io, os, re, math, tempfile, textwrap
+
+# Standard lib (trim this list to what you actually use)
+import io
+import os
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+# --- Chemistry deps (guarded) ---
 try:
-    from rdkit import Chem
-    from rdkit.Chem import AllChem, Descriptors
-except Exception as e:
-    import streamlit as st
-    st.error("RDKit isn’t available in this environment. On Streamlit Cloud, use `environment.yml` with conda-forge rdkit.")
+    from rdkit import Chem, DataStructs
+    from rdkit.Chem import AllChem, Descriptors, PandasTools
+    from rdkit.Chem.Draw import MolToImage
+    from rdkit.Chem.rdMolDescriptors import CalcMolFormula
+except Exception:
+    st.error(
+        "RDKit isn’t available in this environment.\n"
+        "On Streamlit Cloud, provide an `environment.yml` using conda-forge RDKit (see README)."
+    )
     st.stop()
 
+# Mordred depends on RDKit; import it only after RDKit succeeded
+try:
+    from mordred import Calculator, descriptors
+except Exception:
+    st.error(
+        "The 'mordred' package isn’t installed. Add it to your conda/pip deps "
+        "(e.g., environment.yml -> pip: [mordred])."
+    )
+    st.stop()
 
-# Core chem
-from rdkit import Chem
-from rdkit.Chem import AllChem
-from rdkit.Chem import Descriptors
-from rdkit.Chem.Draw import MolToImage
-from rdkit.Chem.rdMolDescriptors import CalcMolFormula
-from rdkit import DataStructs
-from rdkit.Chem import PandasTools
-
-# Descriptors
-from mordred import Calculator, descriptors
-
-# Viz
+# --- Viz & analysis ---
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
@@ -59,8 +65,9 @@ from scipy.spatial.distance import pdist
 from scipy.cluster.hierarchy import linkage, dendrogram, fcluster
 from sklearn.cluster import AgglomerativeClustering
 
-import mpld3
-import plotly.io as pio  # optional, not used below but handy elsewhere
+# Optional extras (comment out if unused)
+# import mpld3
+
 
 st.set_page_config(page_title="DBsimilarity — Streamlit", layout="wide")
 st.title("DBsimilarity — Structure Mining, MassQL & Similarity (Streamlit)")
@@ -1282,3 +1289,4 @@ st.markdown(
 # scikit-learn
 # scipy
 # matplotlib
+
