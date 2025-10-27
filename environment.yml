@@ -3,18 +3,17 @@ channels:
   - conda-forge
 dependencies:
   - python=3.11
-  - rdkit>=2025.09
-  - pandas>=2.3
-  - numpy>=1.26,<3
-  - scikit-learn>=1.5
-  - scipy>=1.12
-  - matplotlib>=3.8
-  - networkx>=3.2
-  - plotly>=5.20
-  - pillow
-  - xlsxwriter
+  - rdkit=2025.09.1
+  - numpy=1.26.*
+  - pandas=2.3.*
+  - scipy=1.16.*
+  - scikit-learn=1.7.*
+  - matplotlib=3.10.*
+  - pillow        # let conda resolve the right build
+  - pyarrow       # streamlit depends on it
   - pip
   - pip:
-      - streamlit>=1.38
-      - mordred
-      - mpld3
+      - streamlit==1.50.0
+      - plotly==6.3.1
+      - mordred==1.2.0
+      - xlsxwriter==3.2.9
