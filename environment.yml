@@ -1,0 +1,19 @@
+name: dbsimilarity
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - rdkit
+  - numpy>=1.26,<2.0
+  - pandas>=2.1
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - networkx
+  - pip
+  - pip:
+      - streamlit>=1.38
+      - plotly
+      - mordred
+      - pillow
+      - xlsxwriter
