@@ -1,20 +1,19 @@
-name: dbsimilarity-st
+name: dbsimilarity
 channels:
   - conda-forge
 dependencies:
   - python=3.11
-  - streamlit>=1.38
-  - rdkit  # from conda-forge (current builds like 2025.09.1 are fine)
-  - pandas>=2.1
-  - numpy>=1.26
-  - scikit-learn
+  - rdkit>=2024         # conda-forge build
+  - numpy<2.4           # matches rdkit/scipy stack
+  - pandas
   - scipy
+  - scikit-learn
   - matplotlib
-  - plotly
   - networkx
-  - pillow
-  - xlsxwriter
-  - pyarrow
   - pip
   - pip:
-      - mordred==1.2.0  # pip-only
+      - streamlit>=1.38
+      - plotly
+      - mordred
+      - xlsxwriter
+      - mpld3
