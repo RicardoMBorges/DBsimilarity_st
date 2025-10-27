@@ -22,16 +22,12 @@ from typing import List, Dict, Tuple, Optional
 import numpy as np
 import pandas as pd
 import streamlit as st
-
 try:
     from rdkit import Chem
-    from rdkit.Chem import PandasTools
+    from rdkit.Chem import AllChem, Descriptors
 except Exception as e:
-    st.error(
-        "RDKit failed to import. Make sure `rdkit-pypi` is in requirements.txt and "
-        "your `runtime.txt` pins Python to 3.11 on Streamlit Cloud.\n\n"
-        f"Details: {e!r}"
-    )
+    import streamlit as st
+    st.error("RDKit isn’t available in this environment. On Streamlit Cloud, use `environment.yml` with conda-forge rdkit.")
     st.stop()
 
 
