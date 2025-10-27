@@ -32,13 +32,11 @@ try:
     from rdkit.Chem import AllChem, Descriptors
     from rdkit.Chem.Draw import MolToImage
 except Exception as e:
-    import streamlit as st
     st.error(
-        "RDKit is not installed/loaded. This app requires RDKit. "
-        "If you’re deploying on Streamlit Cloud, add an `environment.yml` "
-        "using conda-forge RDKit and Python 3.11 (see repo README)."
+        "RDKit is not available in the current environment.\n\n"
+        "On Streamlit Cloud, ensure you're using a Conda env with Python 3.11 and RDKit from conda-forge.\n"
+        "See environment.yml in the repo."
     )
-    st.exception(e)
     st.stop()
 
 
@@ -1307,6 +1305,7 @@ st.markdown(
 # scikit-learn
 # scipy
 # matplotlib
+
 
 
 
