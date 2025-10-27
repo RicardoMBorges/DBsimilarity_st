@@ -28,16 +28,14 @@ import streamlit as st
 
 # --- Chemistry deps (guarded) ---
 try:
-    from rdkit import Chem, DataStructs
-    from rdkit.Chem import AllChem, Descriptors, PandasTools
-    from rdkit.Chem.Draw import MolToImage
-    from rdkit.Chem.rdMolDescriptors import CalcMolFormula
-except Exception:
-    st.error(
-        "RDKit isn’t available in this environment.\n"
-        "On Streamlit Cloud, provide an `environment.yml` using conda-forge RDKit (see README)."
-    )
-    st.stop()
+    from rdkit import Chem
+    from rdkit.Chem import AllChem, Descriptors
+except Exception as e:
+    import streamlit as st
+    st.error("RDKit failed to import. This app requires the conda build. "
+             "Check that environment.yml is present and requirements.txt is removed.")
+    raise
+
 
 # Mordred depends on RDKit; import it only after RDKit succeeded
 try:
@@ -1303,6 +1301,7 @@ st.markdown(
 # scikit-learn
 # scipy
 # matplotlib
+
 
 
 
