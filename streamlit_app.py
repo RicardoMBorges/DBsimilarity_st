@@ -66,7 +66,11 @@ from scipy.cluster.hierarchy import linkage, dendrogram, fcluster
 from sklearn.cluster import AgglomerativeClustering
 
 # Optional extras (comment out if unused)
-# import mpld3
+try:
+    import mpld3
+    HAS_MPLD3 = True
+except Exception:
+    HAS_MPLD3 = False
 
 
 st.set_page_config(page_title="DBsimilarity — Streamlit", layout="wide")
@@ -1183,13 +1187,18 @@ if run_descriptors and not df_target.empty and col_smiles in df_target.columns:
 
                     # --- Downloads ---
                     # 1) Interactive HTML (mpld3)
-                    html_str = mpld3.fig_to_html(fig)
-                    st.download_button(
-                        "⬇️ Download dendrogram (HTML, interactive)",
-                        data=html_str,
-                        file_name="dendrogram.html",
-                        mime="text/html"
-                    )
+                    if HAS_MPLD3:
+                        html_str = mpld3.fig_to_html(fig)
+                        st.download_button(
+                            "⬇️ Download dendrogram (HTML, interactive)",
+                            data=html_str,
+                            file_name="dendrogram.html",
+                            mime="text/html"
+                        )
+                        exports["dendrogram.html"] = html_str.encode("utf-8")
+                    else:
+                        st.caption("Install `mpld3` to enable interactive HTML export: `pip install mpld3`.")
+
 
                     # 2) PNG (static)
                     png_buf = io.BytesIO()
@@ -1289,4 +1298,5 @@ st.markdown(
 # scikit-learn
 # scipy
 # matplotlib
+
 
