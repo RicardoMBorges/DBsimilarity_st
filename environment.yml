@@ -3,17 +3,18 @@ channels:
   - conda-forge
 dependencies:
   - python=3.11
-  - rdkit=2025.09.1
-  - numpy=1.26.*
-  - pandas=2.3.*
-  - scikit-learn=1.7.*
-  - scipy=1.16.*
-  - matplotlib=3.10.*
+  - rdkit>=2023.09
+  - numpy>=1.26,<2.0
+  - pandas>=2.2,<2.4
+  - scikit-learn>=1.4,<1.8
+  - scipy>=1.11,<1.17
+  - matplotlib>=3.7,<3.11
   - pillow
+  - xlsxwriter
   - pip
   - pip:
       - streamlit>=1.38
       - plotly
       - networkx
       - mordred
-      - xlsxwriter
+      - mpld3   # optional, enables interactive dendrogram HTML
