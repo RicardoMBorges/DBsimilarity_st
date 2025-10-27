@@ -65,12 +65,17 @@ from scipy.spatial.distance import pdist
 from scipy.cluster.hierarchy import linkage, dendrogram, fcluster
 from sklearn.cluster import AgglomerativeClustering
 
-# Optional extras (comment out if unused)
 try:
     import mpld3
     HAS_MPLD3 = True
 except Exception:
     HAS_MPLD3 = False
+# ...
+if HAS_MPLD3:
+    html_str = mpld3.fig_to_html(fig)
+    st.download_button("⬇️ Download dendrogram (HTML, interactive)", data=html_str,
+                       file_name="dendrogram.html", mime="text/html")
+
 
 
 st.set_page_config(page_title="DBsimilarity — Streamlit", layout="wide")
@@ -1298,5 +1303,6 @@ st.markdown(
 # scikit-learn
 # scipy
 # matplotlib
+
 
 
