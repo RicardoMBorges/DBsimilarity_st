@@ -22,6 +22,17 @@ import os
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
+import re
+NUM_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+
+import tempfile
+from io import BytesIO
+
+from rdkit import DataStructs
+from rdkit.Chem import PandasTools
+from rdkit.Chem.rdMolDescriptors import CalcMolFormula
+
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -157,14 +168,12 @@ def smart_read_table(file: bytes, filename: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def read_sdf_to_df(file: bytes, filename: str) -> pd.DataFrame:
-    tmp = Path(tempfile.gettempdir())/filename
+    tmp = Path(tempfile.gettempdir()) / filename
     with open(tmp, "wb") as f:
         f.write(file)
     df = PandasTools.LoadSDF(str(tmp), embedProps=True, molColName="ROMol")
     if "SMILES" not in df.columns:
-        # Derive SMILES from molecules when property is missing
         df["SMILES"] = df["ROMol"].apply(lambda m: Chem.MolToSmiles(m) if m is not None else None)
-    # Drop the heavy RDKit mol column; we recalc as needed later
     return df.drop(columns=["ROMol"], errors="ignore")
 
 
@@ -1194,33 +1203,27 @@ if run_descriptors and not df_target.empty and col_smiles in df_target.columns:
 
                     # --- Downloads ---
                     # 1) Interactive HTML (mpld3)
+                    # inside the dendrogram "Downloads" block, after you draw the figure:
                     if HAS_MPLD3:
                         html_str = mpld3.fig_to_html(fig)
-                        st.download_button(
-                            "⬇️ Download dendrogram (HTML, interactive)",
-                            data=html_str,
-                            file_name="dendrogram.html",
-                            mime="text/html"
-                        )
+                        st.download_button("⬇️ Download dendrogram (HTML, interactive)",
+                                           data=html_str, file_name="dendrogram.html", mime="text/html")
                         exports["dendrogram.html"] = html_str.encode("utf-8")
                     else:
                         st.caption("Install `mpld3` to enable interactive HTML export: `pip install mpld3`.")
-
-
-                    # 2) PNG (static)
+                    
+                    # PNG (static)
                     png_buf = io.BytesIO()
                     fig.savefig(png_buf, format="png", dpi=int(dpi), bbox_inches="tight")
                     png_buf.seek(0)
-                    st.download_button(
-                        "⬇️ Download dendrogram (PNG)",
-                        data=png_buf,
-                        file_name="dendrogram.png",
-                        mime="image/png"
-                    )
+                    st.download_button("⬇️ Download dendrogram (PNG)",
+                                       data=png_buf, file_name="dendrogram.png", mime="image/png")
+                    exports["dendrogram.png"] = png_buf.getvalue()
+
 
                     # Optional: keep latest export synchronized
                     exports["dendrogram.html"] = html_str.encode("utf-8")
-                    exports["dendrogram.png"] = png_buf.getvalue()
+                    #exports["dendrogram.png"] = png_buf.getvalue()
 
 
             # ----------------- t-SNE -----------------
@@ -1305,6 +1308,7 @@ st.markdown(
 # scikit-learn
 # scipy
 # matplotlib
+
 
 
 
