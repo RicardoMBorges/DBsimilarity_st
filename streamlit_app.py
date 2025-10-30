@@ -56,7 +56,15 @@ from scipy.spatial.distance import pdist
 from scipy.cluster.hierarchy import linkage, dendrogram, fcluster
 from sklearn.cluster import AgglomerativeClustering
 
-import mpld3
+# optional mpld3 (not always available on Streamlit Cloud)
+try:
+    import mpld3
+    MPLD3_AVAILABLE = True
+except Exception:
+    MPLD3_AVAILABLE = False
+
+import plotly.io as pio
+
 import plotly.io as pio  # optional, not used below but handy elsewhere
 
 st.set_page_config(page_title="DBsimilarity — Streamlit", layout="wide")
@@ -1544,11 +1552,18 @@ if run_descriptors and not df_target.empty and sm_col:
                     st.pyplot(fig, clear_figure=False)
 
                     # --- Downloads ---
-                    html_str = mpld3.fig_to_html(fig)
-                    st.download_button(
-                        "⬇️ Download dendrogram (HTML, interactive)",
-                        data=html_str, file_name="dendrogram.html", mime="text/html"
-                    )
+                    if MPLD3_AVAILABLE:
+                        html_str = mpld3.fig_to_html(fig)
+                        st.download_button(
+                            "⬇️ Download dendrogram (HTML, interactive)",
+                            data=html_str,
+                            file_name="dendrogram.html",
+                            mime="text/html"
+                        )
+                        exports["dendrogram.html"] = html_str.encode("utf-8")
+                    else:
+                        st.info("`mpld3` is not installed in this environment. Install it to export interactive HTML.")
+
 
                     png_buf = io.BytesIO()
                     fig.savefig(png_buf, format="png", dpi=dpi, bbox_inches="tight")
@@ -1644,6 +1659,7 @@ st.markdown(
 # scikit-learn
 # scipy
 # matplotlib
+
 
 
 
