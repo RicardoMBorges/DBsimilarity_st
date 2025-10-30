@@ -1,0 +1,13 @@
+streamlit
+rdkit-pypi
+pandas
+numpy
+plotly
+networkx
+mordred
+scikit-learn
+scipy
+matplotlib
+wordcloud
+xlsxwriter
+pillow
