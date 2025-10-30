@@ -1,0 +1,7 @@
+streamlit>=1.33,<1.40
+pandas>=1.5,<2.3
+numpy>=1.23,<2.0
+rdkit-pypi==2022.9.5
+plotly>=5.18
+networkx>=3.1
+pillow
