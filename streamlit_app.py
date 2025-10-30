@@ -24,13 +24,14 @@ import pandas as pd
 import streamlit as st
 
 # Core chem
-from rdkit import Chem
-from rdkit.Chem import AllChem
-from rdkit.Chem import Descriptors
-from rdkit.Chem.Draw import MolToImage
-from rdkit.Chem.rdMolDescriptors import CalcMolFormula
-from rdkit import DataStructs
-from rdkit.Chem import PandasTools
+
+# --- RDKit (optional on Streamlit Cloud) ---
+try:
+    from rdkit import Chem
+    from rdkit.Chem import Draw, Descriptors, rdMolDescriptors, Crippen, Lipinski, AllChem, rdMolTransforms, PandasTools, DataStructs, CalcMolFormula
+    RDKit_AVAILABLE = True
+except Exception:
+    RDKit_AVAILABLE = False
 
 # Descriptors
 from mordred import Calculator, descriptors
@@ -1578,3 +1579,4 @@ st.markdown(
 # scikit-learn
 # scipy
 # matplotlib
+
