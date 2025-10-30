@@ -376,19 +376,32 @@ def _set_state_df_if_changed(key: str, new_df: pd.DataFrame):
 from PIL import Image, UnidentifiedImageError
 
 STATIC_DIR = Path(__file__).parent / "static"
-LOGO_PATH = STATIC_DIR / "LAABio.png"
-try:
-    logo = Image.open(LOGO_PATH)  # raises if missing
-    st.sidebar.image(logo, use_container_width=True)
-except FileNotFoundError:
-    st.sidebar.warning("Logo not found at static/LAABio.png")
 
-LOGO_DBsimilarity_PATH = STATIC_DIR / "DBsimilarity.png"
-try:
-    logo = Image.open(LOGO_DBsimilarity_PATH)  # raises if missing
-    st.sidebar.image(logo, use_container_width=True)
-except FileNotFoundError:
-    st.sidebar.warning("Logo not found at static/DBsimilarity.png")
+def safe_sidebar_image(path: Path, msg: str):
+    if not path.exists():
+        st.sidebar.warning(msg + f" (missing: {path})")
+        return
+    try:
+        img = Image.open(path)
+        st.sidebar.image(img, use_container_width=True)
+    except (UnidentifiedImageError, OSError, ValueError) as e:
+        # file exists but is not a valid image
+        st.sidebar.warning(msg + f" (could not open: {e})")
+    except Exception as e:
+        # last-resort catch: never crash the app because of a logo
+        st.sidebar.warning(msg + f" (unexpected error: {e})")
+
+# 1) main lab logo
+safe_sidebar_image(
+    STATIC_DIR / "LAABio.png",
+    "Logo not found: static/LAABio.png"
+)
+
+# 2) DBsimilarity logo
+safe_sidebar_image(
+    STATIC_DIR / "DBsimilarity.png",
+    "Logo not found: static/DBsimilarity.png"
+)
 
 st.markdown(
     """
@@ -1659,6 +1672,7 @@ st.markdown(
 # scikit-learn
 # scipy
 # matplotlib
+
 
 
 
