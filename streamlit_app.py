@@ -383,7 +383,7 @@ def safe_sidebar_image(path: Path, msg: str):
         return
     try:
         img = Image.open(path)
-        st.sidebar.image(img, use_container_width=True)
+        st.sidebar.image(img)
     except (UnidentifiedImageError, OSError, ValueError) as e:
         # file exists but is not a valid image
         st.sidebar.warning(msg + f" (could not open: {e})")
@@ -1672,6 +1672,7 @@ st.markdown(
 # scikit-learn
 # scipy
 # matplotlib
+
 
 
 
