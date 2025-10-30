@@ -24,7 +24,6 @@ import pandas as pd
 import streamlit as st
 
 # Core chem
-
 # --- RDKit (optional on Streamlit Cloud) ---
 try:
     from rdkit import Chem
@@ -33,8 +32,13 @@ try:
 except Exception:
     RDKit_AVAILABLE = False
 
-# Descriptors
-from mordred import Calculator, descriptors
+# --- Mordred (also optional) ---
+try:
+    from mordred import Calculator, descriptors
+    MORDRED_AVAILABLE = True
+except Exception:
+    MORDRED_AVAILABLE = False
+
 
 # Viz
 import plotly.express as px
@@ -1311,145 +1315,149 @@ def sanitize_matrix_for_modeling(df_vals: pd.DataFrame) -> pd.DataFrame:
     return X
 
 sm_col = resolve_smiles_col(df_target, col_smiles)
+# Descriptors + PCA / Dendrogram / t-SNE
 if run_descriptors and not df_target.empty and sm_col:
     st.subheader("Descriptors → PCA / Dendrogram / t-SNE")
 
-
-    smiles = df_target[sm_col].astype(str).tolist()
-    mols = [mol_from_smiles(s) for s in smiles]
-
-    with st.spinner("Calculating Mordred descriptors (this may take a while)…"):
-        try:
-            calc = Calculator(descriptors, ignore_3D=not use_3d)
-            df_desc = calc.pandas(mols)
-        except Exception as e:
-            st.error(f"Mordred failed: {e}")
-            df_desc = pd.DataFrame()
-
-    if df_desc.empty:
-        st.info("No descriptors available (empty table). Skipping PCA / Dendrogram / t-SNE.")
+    # 1) guard: mordred may not be installed on Streamlit Cloud
+    if not MORDRED_AVAILABLE:
+        st.warning(
+            "Mordred is not available in this environment. "
+            "Run locally or install `mordred` to enable descriptors."
+        )
     else:
-        # 1) Sanitize → numeric, finite, non-constant
-        df_vals_raw = df_desc.select_dtypes(include=[np.number])
-        df_vals = sanitize_matrix_for_modeling(df_vals_raw)
+        # ---- everything below only runs when mordred is available ----
+        smiles = df_target[sm_col].astype(str).tolist()
+        mols = [mol_from_smiles(s) for s in smiles]
 
-        # Export cleaned descriptors (useful for debugging)
-        try:
-            exports["descriptors_clean.csv"] = df_vals.to_csv(index=False).encode("utf-8")
-        except Exception:
-            pass
+        with st.spinner("Calculating Mordred descriptors (this may take a while)…"):
+            try:
+                calc = Calculator(descriptors, ignore_3D=not use_3d)
+                df_desc = calc.pandas(mols)
+            except Exception as e:
+                st.error(f"Mordred failed: {e}")
+                df_desc = pd.DataFrame()
 
-        # 2) (Optional) cap features to top-k by variance BEFORE scaling
-        k = min(1000, df_vals.shape[1])  # expose in sidebar later if you want
-        if k < df_vals.shape[1]:
-            topk = df_vals.var().sort_values(ascending=False).index[:k]
-            df_vals = df_vals[topk]
-
-        # 3) Re-evaluate shapes AFTER capping
-        n_samples, n_features = df_vals.shape
-        st.caption(f"Descriptors after cleaning: {n_samples} samples × {n_features} features")
-
-        if n_samples < 2 or n_features < 1:
-            st.info("Not enough data for PCA/Dendrogram/t-SNE (need ≥2 samples and ≥1 feature).")
+        if df_desc.empty:
+            st.info("No descriptors available (empty table). Skipping PCA / Dendrogram / t-SNE.")
         else:
-            # 4) Standardize ON the final df_vals (use everywhere below)
+            # 1) Sanitize → numeric, finite, non-constant
+            df_vals_raw = df_desc.select_dtypes(include=[np.number])
+            df_vals = sanitize_matrix_for_modeling(df_vals_raw)
+
+            # Export cleaned descriptors (useful for debugging)
             try:
-                X = StandardScaler(with_mean=True, with_std=True).fit_transform(df_vals.values)
-            except Exception as e:
-                st.warning(f"Standardization failed: {e}")
-                X = df_vals.values  # fallback
+                exports["descriptors_clean.csv"] = df_vals.to_csv(index=False).encode("utf-8")
+            except Exception:
+                pass
 
-            # Optional IDs for hover labels (aligns with df_target order)
-            ids = df_target.get("InchiKey", pd.Series([f"mol_{i+1}" for i in range(n_samples)])).astype(str).tolist()
+            # 2) (Optional) cap features to top-k by variance BEFORE scaling
+            k = min(1000, df_vals.shape[1])
+            if k < df_vals.shape[1]:
+                topk = df_vals.var().sort_values(ascending=False).index[:k]
+                df_vals = df_vals[topk]
 
-            # ----------------- PCA (2D) -----------------
-            try:
-                ncomp = int(min(2, n_features, n_samples))
-                if ncomp >= 1:
-                    # Fit PCA
-                    pca = PCA(n_components=ncomp, svd_solver="auto")
-                    scores = pca.fit_transform(X)
+            # 3) Re-evaluate shapes AFTER capping
+            n_samples, n_features = df_vals.shape
+            st.caption(f"Descriptors after cleaning: {n_samples} samples × {n_features} features")
 
-                    # ----- Optional color by in_df* flags from merged_df -----
-                    pca_color = None
-                    merged_for_colors = st.session_state.get("merged_df", pd.DataFrame())
-                    if not merged_for_colors.empty:
-                        import re as _re
-                        in_cols_all = [c for c in merged_for_colors.columns if _re.match(r"^in_df\d+$", c)]
+            if n_samples < 2 or n_features < 1:
+                st.info("Not enough data for PCA/Dendrogram/t-SNE (need ≥2 samples and ≥1 feature).")
+            else:
+                # 4) Standardize
+                try:
+                    X = StandardScaler(with_mean=True, with_std=True).fit_transform(df_vals.values)
+                except Exception as e:
+                    st.warning(f"Standardization failed: {e}")
+                    X = df_vals.values  # fallback
 
-                        # Let user include constant columns so they can pick in_df1 if it's all 1s
-                        show_constant = st.checkbox(
-                            "Show all in_df… columns (even if constant on PCA set)",
-                            value=False,
-                            key="pca_show_constant_cols",
-                            help="If off, only columns that vary (both 0 and 1) are listed."
-                        )
+                # IDs for hover
+                ids = df_target.get(
+                    "InchiKey",
+                    pd.Series([f"mol_{i+1}" for i in range(n_samples)])
+                ).astype(str).tolist()
 
-                        # Join key: prefer InchiKey, else col_key if present in both
-                        join_key = "InchiKey" if "InchiKey" in merged_for_colors.columns else (
-                            col_key if (col_key in merged_for_colors.columns and col_key in df_target.columns) else None
-                        )
+                # ----------------- PCA (2D) -----------------
+                try:
+                    ncomp = int(min(2, n_features, n_samples))
+                    if ncomp >= 1:
+                        pca = PCA(n_components=ncomp, svd_solver="auto")
+                        scores = pca.fit_transform(X)
 
-                        if join_key is not None and in_cols_all:
-                            # Align flags to PCA order
-                            left  = pd.DataFrame({join_key: df_target.get(join_key, pd.Series(ids)).values})
-                            right = merged_for_colors[[join_key] + in_cols_all].drop_duplicates(subset=[join_key])
-                            merged_colors = left.merge(right, on=join_key, how="left")
+                        # optional coloring by in_df... (your original logic)
+                        pca_color = None
+                        merged_for_colors = st.session_state.get("merged_df", pd.DataFrame())
+                        if not merged_for_colors.empty:
+                            import re as _re
+                            in_cols_all = [c for c in merged_for_colors.columns if _re.match(r"^in_df\d+$", c)]
 
-                            # Which columns vary on this subset?
-                            varying_cols = []
-                            for c in in_cols_all:
-                                vals = merged_colors[c].fillna(0).astype(int)
-                                if vals.nunique() > 1:
-                                    varying_cols.append(c)
+                            show_constant = st.checkbox(
+                                "Show all in_df… columns (even if constant on PCA set)",
+                                value=False,
+                                key="pca_show_constant_cols",
+                            )
 
-                            selectable = in_cols_all if show_constant else varying_cols
-                            if selectable:
-                                default_idx = selectable.index("in_df2") if "in_df2" in selectable else 0
-                                color_col = st.selectbox("Color PCA by", selectable, index=default_idx, key="pca_color_in_df")
-                                pca_color = merged_colors[color_col].fillna(0).astype(int).astype(str)  # "0"/"1"
-                                if color_col == "in_df1" and not show_constant and "in_df1" not in varying_cols:
-                                    st.caption("Note: `in_df1` is constant (=1) on the PCA set; enable the checkbox above to select it.")
+                            join_key = "InchiKey" if "InchiKey" in merged_for_colors.columns else (
+                                col_key if (col_key in merged_for_colors.columns and col_key in df_target.columns) else None
+                            )
+
+                            if join_key is not None and in_cols_all:
+                                left = pd.DataFrame({join_key: df_target.get(join_key, pd.Series(ids)).values})
+                                right = merged_for_colors[[join_key] + in_cols_all].drop_duplicates(subset=[join_key])
+                                merged_colors = left.merge(right, on=join_key, how="left")
+
+                                varying_cols = []
+                                for c in in_cols_all:
+                                    vals = merged_colors[c].fillna(0).astype(int)
+                                    if vals.nunique() > 1:
+                                        varying_cols.append(c)
+
+                                selectable = in_cols_all if show_constant else varying_cols
+                                if selectable:
+                                    default_idx = selectable.index("in_df2") if "in_df2" in selectable else 0
+                                    color_col = st.selectbox(
+                                        "Color PCA by",
+                                        selectable,
+                                        index=default_idx,
+                                        key="pca_color_in_df"
+                                    )
+                                    pca_color = merged_colors[color_col].fillna(0).astype(int).astype(str)
+                                else:
+                                    st.info("No `in_df…` column varies across the PCA points.")
                             else:
-                                st.info(
-                                    "No `in_df…` column varies across the PCA points. "
-                                    "This usually happens because PCA uses only `df_target` rows and `in_df1` flags membership in `df_target` (all 1). "
-                                    "Turn on the checkbox to select constant columns, or pick another column like `in_df2`."
-                                )
+                                st.caption("Could not align colors for PCA (no common key or no `in_df…` columns).")
+
+                        if pca_color is not None:
+                            fig_pca = px.scatter(
+                                x=scores[:, 0],
+                                y=(scores[:, 1] if ncomp > 1 else np.zeros_like(scores[:, 0])),
+                                title=f"PCA ({ncomp} component{'s' if ncomp>1 else ''})",
+                                labels={"x": "PC1", "y": ("PC2" if ncomp > 1 else "PC2 (zero)")},
+                                hover_name=ids,
+                                color=pca_color
+                            )
                         else:
-                            st.caption("Could not align colors for PCA (no common key or no `in_df…` columns).")
+                            fig_pca = px.scatter(
+                                x=scores[:, 0],
+                                y=(scores[:, 1] if ncomp > 1 else np.zeros_like(scores[:, 0])),
+                                title=f"PCA ({ncomp} component{'s' if ncomp>1 else ''})",
+                                labels={"x": "PC1", "y": ("PC2" if ncomp > 1 else "PC2 (zero)")},
+                                hover_name=ids
+                            )
 
-                    # ----- Create PCA scatter (with/without color) -----
-                    if pca_color is not None:
-                        fig_pca = px.scatter(
-                            x=scores[:, 0],
-                            y=(scores[:, 1] if ncomp > 1 else np.zeros_like(scores[:, 0])),
-                            title=f"PCA ({ncomp} component{'s' if ncomp>1 else ''})",
-                            labels={"x": "PC1", "y": ("PC2" if ncomp > 1 else "PC2 (zero)")},
-                            hover_name=ids,
-                            color=pca_color
+                        st.plotly_chart(fig_pca, use_container_width=True)
+
+                        exports["pca_scores.csv"] = (
+                            pd.DataFrame(scores[:, :max(1, ncomp)], columns=["PC1", "PC2"][:ncomp])
+                            .to_csv(index=False).encode()
                         )
+                        exports["pca.html"] = pio.to_html(fig_pca, include_plotlyjs='cdn', full_html=True).encode()
                     else:
-                        fig_pca = px.scatter(
-                            x=scores[:, 0],
-                            y=(scores[:, 1] if ncomp > 1 else np.zeros_like(scores[:, 0])),
-                            title=f"PCA ({ncomp} component{'s' if ncomp>1 else ''})",
-                            labels={"x": "PC1", "y": ("PC2" if ncomp > 1 else "PC2 (zero)")},
-                            hover_name=ids
-                        )
+                        st.info("PCA skipped: fewer than 1 usable component.")
+                except Exception as e:
+                    st.warning(f"PCA failed: {e}")
 
-                    st.plotly_chart(fig_pca, use_container_width=True, #key="pca_chart"
-                    )
 
-                    # Exports
-                    exports["pca_scores.csv"] = (
-                        pd.DataFrame(scores[:, :max(1, ncomp)], columns=["PC1","PC2"][:ncomp]).to_csv(index=False).encode()
-                    )
-                    exports["pca.html"] = pio.to_html(fig_pca, include_plotlyjs='cdn', full_html=True).encode()
-                else:
-                    st.info("PCA skipped: fewer than 1 usable component.")
-            except Exception as e:
-                st.warning(f"PCA failed: {e}")
 
 
             # ----------------- Dendrogram: view or save (HTML/PNG) -----------------
@@ -1636,5 +1644,6 @@ st.markdown(
 # scikit-learn
 # scipy
 # matplotlib
+
 
 
