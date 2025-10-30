@@ -146,7 +146,10 @@ def smart_read_table(file: bytes, filename: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def read_sdf_to_df(file: bytes, filename: str) -> pd.DataFrame:
-    tmp = Path(tempfile.gettempdir())/filename
+    if not RDKit_AVAILABLE:
+        st.error("SDF import requires RDKit, which is not available in this environment.")
+        return pd.DataFrame()
+    tmp = Path(tempfile.gettempdir()) / filename
     with open(tmp, "wb") as f:
         f.write(file)
     df = PandasTools.LoadSDF(str(tmp), embedProps=True, molColName=None, smilesName="SMILES")
@@ -162,26 +165,44 @@ def resolve_col(df: pd.DataFrame, wanted: str) -> str:
 
 # Molecule utilities
 def mol_from_smiles(smiles: str):
+    if not RDKit_AVAILABLE:
+        return None
     try:
-        m = Chem.MolFromSmiles(smiles)
-        return m
+        return Chem.MolFromSmiles(smiles)
     except Exception:
         return None
 
 # Add calculated chem columns
 def enrich_chem(df: pd.DataFrame, smiles_col: str) -> pd.DataFrame:
     df = df.copy()
+
+    # If RDKit is not available, just return the df untouched
+    if not RDKit_AVAILABLE:
+        # still create empty columns so the rest of the app doesn't break
+        df["Inchi"] = df.get("Inchi", None)
+        df["InchiKey"] = df.get("InchiKey", None)
+        df["ExactMass"] = df.get("ExactMass", None)
+        for ad in ADDUCT_SPECS.keys():
+            colname = f"mz {ad}"
+            if colname not in df.columns:
+                df[colname] = None
+        return df
+
+    # RDKit path
     mols = [mol_from_smiles(s) for s in df[smiles_col].astype(str)]
     df["MolFormula"] = [CalcMolFormula(m) if m else None for m in mols]
     df["Inchi"]      = [Chem.MolToInchi(m) if m else None for m in mols]
     df["InchiKey"]   = [Chem.MolToInchiKey(m) if m else None for m in mols]
     exact = [Descriptors.ExactMolWt(m) if m else None for m in mols]
     df["ExactMass"]  = exact
+
     # per-adduct m/z columns
     for ad, (mult, add_mass, z) in ADDUCT_SPECS.items():
         denom = abs(z) if z != 0 else 1
         df[f"mz {ad}"] = [(mult * mw + add_mass) / denom if mw is not None else None for mw in exact]
+
     return df
+
 
 
 # MassQL builders (MS1 / MS2)
@@ -303,18 +324,33 @@ def merge_by_key(dfs: List[pd.DataFrame], key: str) -> pd.DataFrame:
 
 # Similarity graph
 def fingerprints(smiles: List[str], radius:int=2, nBits:int=2048):
+    if not RDKit_AVAILABLE:
+        return [None for _ in smiles]
     mols = [mol_from_smiles(s) for s in smiles]
-    return [AllChem.GetMorganFingerprintAsBitVect(m, radius, nBits=nBits) if m else None for m in mols]
+    return [
+        AllChem.GetMorganFingerprintAsBitVect(m, radius, nBits=nBits) if m else None
+        for m in mols
+    ]
 
 @st.cache_data(show_spinner=False)
 def pairwise_similarity(ikeys: List[str], fps: List, metric: str = "dice") -> pd.DataFrame:
+    if not RDKit_AVAILABLE:
+        # return empty DF so caller can detect and show a message
+        return pd.DataFrame(columns=["SOURCE", "TARGET", "CORRELATION"])
     n = len(fps)
     rows = []
     for i in range(n):
-        if fps[i] is None: continue
-        # Bulk comparisons for speed
-        sims = [ (DataStructs.DiceSimilarity(fps[i], fps[j]) if metric=="dice" else DataStructs.TanimotoSimilarity(fps[i], fps[j])) if fps[j] is not None else 0.0 for j in range(i+1, n)]
-        for j, s in enumerate(sims, start=i+1):
+        if fps[i] is None:
+            continue
+        sims = [
+            (
+                DataStructs.DiceSimilarity(fps[i], fps[j])
+                if metric == "dice"
+                else DataStructs.TanimotoSimilarity(fps[i], fps[j])
+            ) if fps[j] is not None else 0.0
+            for j in range(i + 1, n)
+        ]
+        for j, s in enumerate(sims, start=i + 1):
             rows.append((ikeys[i], ikeys[j], float(s)))
     return pd.DataFrame(rows, columns=["SOURCE","TARGET","CORRELATION"])
 
@@ -1056,75 +1092,96 @@ if run_similarity and not df_target.empty:
 
     smiles_list = df_target[sm_col].astype(str).tolist()
     inchi_list  = df_target.get("InchiKey", pd.Series([f"mol_{i+1}" for i in range(len(smiles_list))])).astype(str).tolist()
-    fps = fingerprints(smiles_list, radius=2, nBits=2048)
-    sim_df = pairwise_similarity(inchi_list, fps, metric=sim_metric)
 
-    # edges and graph
-    edges = sim_df[sim_df["CORRELATION"] >= float(sim_thresh)].copy()
-    G = nx.from_pandas_edgelist(edges, "SOURCE","TARGET")
-    nodes_all = set(inchi_list)
-    G.add_nodes_from(nodes_all - set(G.nodes()))
+    # --- NEW: guard for missing RDKit ---
+    if not RDKit_AVAILABLE:
+        st.warning("RDKit is not available on this Streamlit environment, so the similarity "
+                   "network (Morgan fingerprints) is disabled. Run locally with RDKit to enable it.")
+    else:
+        fps = fingerprints(smiles_list, radius=2, nBits=2048)
+        sim_df = pairwise_similarity(inchi_list, fps, metric=sim_metric)
 
-    # layout + traces
-    pos = nx.spring_layout(G, seed=42, k=0.8)
-    x, y, text, deg = [], [], [], []
-    for n in G.nodes():
-        xx, yy = pos[n]
-        x.append(xx); y.append(yy)
-        text.append(n)
-        deg.append(G.degree[n])
-    node_trace = go.Scatter(x=x, y=y, text=text, mode='markers', marker=dict(size=[6+2*d for d in deg]))
-    xe, ye = [], []
-    for u, v in G.edges():
-        xe += [pos[u][0], pos[v][0], None]
-        ye += [pos[u][1], pos[v][1], None]
-    edge_trace = go.Scatter(x=xe, y=ye, mode='lines', hoverinfo='none')
-    fig_net = go.Figure(data=[edge_trace, node_trace])
-    fig_net.update_layout(title="Similarity network", showlegend=False, margin=dict(l=0, r=0, t=40, b=0))
+        # edges and graph
+        edges = sim_df[sim_df["CORRELATION"] >= float(sim_thresh)].copy()
+        G = nx.from_pandas_edgelist(edges, "SOURCE", "TARGET")
+        nodes_all = set(inchi_list)
+        G.add_nodes_from(nodes_all - set(G.nodes()))
 
-    # data for downloads
-    edges_csv_blob = edges.to_csv(sep=";", index=False).encode("utf-8")
-    net_html_blob = pio.to_html(fig_net, include_plotlyjs='cdn', full_html=True).encode("utf-8")
-
-    G2 = nx.from_pandas_edgelist(edges, "SOURCE", "TARGET")
-    iso = list(nodes_all - set(G2.nodes()))
-    df_iso = df_target[df_target["InchiKey"].isin(iso)] if "InchiKey" in df_target.columns else pd.DataFrame({"InchiKey": iso})
-    iso_csv_blob = df_iso.to_csv(index=False).encode("utf-8")
-
-    # put the heavy preview inside a dropdown
-    with st.expander("Show network and sample rows", expanded=False):
-        show_df(sim_df.head(10), caption="Similarity rows (sample)")
-        st.caption(f"Edges ≥ {sim_thresh:.2f}: {len(edges)}  |  Isolated nodes: {len(iso)}")
-        st.plotly_chart(fig_net, use_container_width=True)
-
-    # keep download buttons outside the dropdown (always visible)
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.download_button(
-            f"Download edges CSV (≥ {sim_thresh:.2f})",
-            data=edges_csv_blob,
-            file_name=f"DB_compounds_Similarity_{sim_thresh:.2f}.csv",
-            key="dl_edges_csv_main"
+        # layout + traces
+        pos = nx.spring_layout(G, seed=42, k=0.8)
+        x, y, text, deg = [], [], [], []
+        for n in G.nodes():
+            xx, yy = pos[n]
+            x.append(xx); y.append(yy)
+            text.append(n)
+            deg.append(G.degree[n])
+        node_trace = go.Scatter(
+            x=x,
+            y=y,
+            text=text,
+            mode='markers',
+            marker=dict(size=[6 + 2 * d for d in deg])
         )
-    with c2:
-        st.download_button(
-            "Download network HTML",
-            data=net_html_blob,
-            file_name="similarity_network.html",
-            key="dl_network_html_main"
-        )
-    with c3:
-        st.download_button(
-            "Download isolated_nodes.csv",
-            data=iso_csv_blob,
-            file_name="isolated_nodes.csv",
-            key="dl_iso_csv_main"
+        xe, ye = [], []
+        for u, v in G.edges():
+            xe += [pos[u][0], pos[v][0], None]
+            ye += [pos[u][1], pos[v][1], None]
+        edge_trace = go.Scatter(x=xe, y=ye, mode='lines', hoverinfo='none')
+        fig_net = go.Figure(data=[edge_trace, node_trace])
+        fig_net.update_layout(
+            title="Similarity network",
+            showlegend=False,
+            margin=dict(l=0, r=0, t=40, b=0)
         )
 
-    # also expose in the bottom 'Downloads' section
-    exports[f"DB_compounds_Similarity_{sim_thresh:.2f}.csv"] = edges_csv_blob
-    exports["similarity_network.html"] = net_html_blob
-    exports["isolated_nodes.csv"] = iso_csv_blob
+        # data for downloads
+        edges_csv_blob = edges.to_csv(sep=";", index=False).encode("utf-8")
+        net_html_blob = pio.to_html(fig_net, include_plotlyjs='cdn', full_html=True).encode("utf-8")
+
+        G2 = nx.from_pandas_edgelist(edges, "SOURCE", "TARGET")
+        iso = list(nodes_all - set(G2.nodes()))
+        df_iso = (
+            df_target[df_target["InchiKey"].isin(iso)]
+            if "InchiKey" in df_target.columns
+            else pd.DataFrame({"InchiKey": iso})
+        )
+        iso_csv_blob = df_iso.to_csv(index=False).encode("utf-8")
+
+        # put the heavy preview inside a dropdown
+        with st.expander("Show network and sample rows", expanded=False):
+            show_df(sim_df.head(10), caption="Similarity rows (sample)")
+            st.caption(f"Edges ≥ {sim_thresh:.2f}: {len(edges)}  |  Isolated nodes: {len(iso)}")
+            st.plotly_chart(fig_net, use_container_width=True)
+
+        # keep download buttons outside the dropdown (always visible)
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.download_button(
+                f"Download edges CSV (≥ {sim_thresh:.2f})",
+                data=edges_csv_blob,
+                file_name=f"DB_compounds_Similarity_{sim_thresh:.2f}.csv",
+                key="dl_edges_csv_main"
+            )
+        with c2:
+            st.download_button(
+                "Download network HTML",
+                data=net_html_blob,
+                file_name="similarity_network.html",
+                key="dl_network_html_main"
+            )
+        with c3:
+            st.download_button(
+                "Download isolated_nodes.csv",
+                data=iso_csv_blob,
+                file_name="isolated_nodes.csv",
+                key="dl_iso_csv_main"
+            )
+
+        # also expose in the bottom 'Downloads' section
+        exports[f"DB_compounds_Similarity_{sim_thresh:.2f}.csv"] = edges_csv_blob
+        exports["similarity_network.html"] = net_html_blob
+        exports["isolated_nodes.csv"] = iso_csv_blob
+
     
 # ==============================================================================================
 # ---------- Filter: compounds similar to the targeted set (in_df1 == 1) ----------
@@ -1579,4 +1636,5 @@ st.markdown(
 # scikit-learn
 # scipy
 # matplotlib
+
 
