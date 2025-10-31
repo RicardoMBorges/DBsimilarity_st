@@ -57,7 +57,7 @@ Hybrid descriptors capturing both **topology and electronic state** per atom typ
 
 ---
 
-## 🔌 **4. E-State / Partial Charge–Surface Area Hybrid Descriptors**
+## **4. E-State / Partial Charge–Surface Area Hybrid Descriptors**
 
 Combine **electronic charge or E-state values** with **surface area partitions (VSA)**.
 **Nature:** Property bins combining polarity and accessible area.
