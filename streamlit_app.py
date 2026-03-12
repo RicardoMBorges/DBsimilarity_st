@@ -20,24 +20,31 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
 import numpy as np
+
+# --- NumPy 2.x ↔ Mordred compatibility patch ---
+# Mordred expects `numpy.product` (removed in NumPy 2.x).
+# We alias it to `np.prod` if missing.
+if not hasattr(np, "product"):
+    np.product = np.prod
+if not hasattr(np, "cumproduct"):
+    np.cumproduct = np.cumprod
+# -----------------------------------------------
+
 import pandas as pd
 import streamlit as st
 
 # Core chem
-# --- RDKit (optional on Streamlit Cloud) ---
-try:
-    from rdkit import Chem
-    from rdkit.Chem import Draw, Descriptors, rdMolDescriptors, Crippen, Lipinski, AllChem, rdMolTransforms, PandasTools, DataStructs, CalcMolFormula
-    RDKit_AVAILABLE = True
-except Exception:
-    RDKit_AVAILABLE = False
+from rdkit import Chem
+from rdkit.Chem import AllChem
+from rdkit.Chem import Descriptors
+from rdkit.Chem.Draw import MolToImage
+from rdkit.Chem.rdMolDescriptors import CalcMolFormula
+from rdkit import DataStructs
+from rdkit.Chem import PandasTools
+from rdkit.Chem.Scaffolds import MurckoScaffold
 
-# --- Mordred (also optional) ---
-try:
-    from mordred import Calculator, descriptors
-    MORDRED_AVAILABLE = True
-except Exception:
-    MORDRED_AVAILABLE = False
+# Descriptors
+from mordred import Calculator, descriptors
 
 
 # Viz
@@ -56,16 +63,12 @@ from scipy.spatial.distance import pdist
 from scipy.cluster.hierarchy import linkage, dendrogram, fcluster
 from sklearn.cluster import AgglomerativeClustering
 
-# optional mpld3 (not always available on Streamlit Cloud)
 try:
     import mpld3
-    MPLD3_AVAILABLE = True
+    HAS_MPLD3 = True
 except Exception:
-    MPLD3_AVAILABLE = False
+    HAS_MPLD3 = False
 
-import plotly.io as pio
-
-import plotly.io as pio  # optional, not used below but handy elsewhere
 
 st.set_page_config(page_title="DBsimilarity — Streamlit", layout="wide")
 st.title("DBsimilarity — Structure Mining, MassQL & Similarity (Streamlit)")
@@ -158,10 +161,7 @@ def smart_read_table(file: bytes, filename: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def read_sdf_to_df(file: bytes, filename: str) -> pd.DataFrame:
-    if not RDKit_AVAILABLE:
-        st.error("SDF import requires RDKit, which is not available in this environment.")
-        return pd.DataFrame()
-    tmp = Path(tempfile.gettempdir()) / filename
+    tmp = Path(tempfile.gettempdir())/filename
     with open(tmp, "wb") as f:
         f.write(file)
     df = PandasTools.LoadSDF(str(tmp), embedProps=True, molColName=None, smilesName="SMILES")
@@ -177,44 +177,26 @@ def resolve_col(df: pd.DataFrame, wanted: str) -> str:
 
 # Molecule utilities
 def mol_from_smiles(smiles: str):
-    if not RDKit_AVAILABLE:
-        return None
     try:
-        return Chem.MolFromSmiles(smiles)
+        m = Chem.MolFromSmiles(smiles)
+        return m
     except Exception:
         return None
 
 # Add calculated chem columns
 def enrich_chem(df: pd.DataFrame, smiles_col: str) -> pd.DataFrame:
     df = df.copy()
-
-    # If RDKit is not available, just return the df untouched
-    if not RDKit_AVAILABLE:
-        # still create empty columns so the rest of the app doesn't break
-        df["Inchi"] = df.get("Inchi", None)
-        df["InchiKey"] = df.get("InchiKey", None)
-        df["ExactMass"] = df.get("ExactMass", None)
-        for ad in ADDUCT_SPECS.keys():
-            colname = f"mz {ad}"
-            if colname not in df.columns:
-                df[colname] = None
-        return df
-
-    # RDKit path
     mols = [mol_from_smiles(s) for s in df[smiles_col].astype(str)]
     df["MolFormula"] = [CalcMolFormula(m) if m else None for m in mols]
     df["Inchi"]      = [Chem.MolToInchi(m) if m else None for m in mols]
     df["InchiKey"]   = [Chem.MolToInchiKey(m) if m else None for m in mols]
     exact = [Descriptors.ExactMolWt(m) if m else None for m in mols]
     df["ExactMass"]  = exact
-
     # per-adduct m/z columns
     for ad, (mult, add_mass, z) in ADDUCT_SPECS.items():
         denom = abs(z) if z != 0 else 1
         df[f"mz {ad}"] = [(mult * mw + add_mass) / denom if mw is not None else None for mw in exact]
-
     return df
-
 
 
 # MassQL builders (MS1 / MS2)
@@ -336,35 +318,36 @@ def merge_by_key(dfs: List[pd.DataFrame], key: str) -> pd.DataFrame:
 
 # Similarity graph
 def fingerprints(smiles: List[str], radius:int=2, nBits:int=2048):
-    if not RDKit_AVAILABLE:
-        return [None for _ in smiles]
     mols = [mol_from_smiles(s) for s in smiles]
-    return [
-        AllChem.GetMorganFingerprintAsBitVect(m, radius, nBits=nBits) if m else None
-        for m in mols
-    ]
+    return [AllChem.GetMorganFingerprintAsBitVect(m, radius, nBits=nBits) if m else None for m in mols]
 
 @st.cache_data(show_spinner=False)
 def pairwise_similarity(ikeys: List[str], fps: List, metric: str = "dice") -> pd.DataFrame:
-    if not RDKit_AVAILABLE:
-        # return empty DF so caller can detect and show a message
-        return pd.DataFrame(columns=["SOURCE", "TARGET", "CORRELATION"])
     n = len(fps)
     rows = []
     for i in range(n):
-        if fps[i] is None:
-            continue
-        sims = [
-            (
-                DataStructs.DiceSimilarity(fps[i], fps[j])
-                if metric == "dice"
-                else DataStructs.TanimotoSimilarity(fps[i], fps[j])
-            ) if fps[j] is not None else 0.0
-            for j in range(i + 1, n)
-        ]
-        for j, s in enumerate(sims, start=i + 1):
+        if fps[i] is None: continue
+        # Bulk comparisons for speed
+        sims = [ (DataStructs.DiceSimilarity(fps[i], fps[j]) if metric=="dice" else DataStructs.TanimotoSimilarity(fps[i], fps[j])) if fps[j] is not None else 0.0 for j in range(i+1, n)]
+        for j, s in enumerate(sims, start=i+1):
             rows.append((ikeys[i], ikeys[j], float(s)))
     return pd.DataFrame(rows, columns=["SOURCE","TARGET","CORRELATION"])
+
+def murcko_from_smiles(smi: str) -> Optional[str]:
+    try:
+        m = Chem.MolFromSmiles(smi)
+        if m is None:
+            return None
+        scaff = MurckoScaffold.GetScaffoldForMol(m)
+        if scaff is None:
+            return None
+        return Chem.MolToSmiles(scaff, isomericSmiles=False)
+    except Exception:
+        return None
+
+# global (fallback) scaffold series – will be overwritten later if we have data
+scaf_series = pd.Series(dtype="object")
+
 
 def _set_state_df_if_changed(key: str, new_df: pd.DataFrame):
     """Update session_state[key] only if it is missing or differs by content."""
@@ -376,32 +359,19 @@ def _set_state_df_if_changed(key: str, new_df: pd.DataFrame):
 from PIL import Image, UnidentifiedImageError
 
 STATIC_DIR = Path(__file__).parent / "static"
+LOGO_PATH = STATIC_DIR / "LAABio.png"
+try:
+    logo = Image.open(LOGO_PATH)  # raises if missing
+    st.sidebar.image(logo, use_container_width=True)
+except FileNotFoundError:
+    st.sidebar.warning("Logo not found at static/LAABio.png")
 
-def safe_sidebar_image(path: Path, msg: str):
-    if not path.exists():
-        st.sidebar.warning(msg + f" (missing: {path})")
-        return
-    try:
-        img = Image.open(path)
-        st.sidebar.image(img)
-    except (UnidentifiedImageError, OSError, ValueError) as e:
-        # file exists but is not a valid image
-        st.sidebar.warning(msg + f" (could not open: {e})")
-    except Exception as e:
-        # last-resort catch: never crash the app because of a logo
-        st.sidebar.warning(msg + f" (unexpected error: {e})")
-
-# 1) main lab logo
-safe_sidebar_image(
-    STATIC_DIR / "LAABio.png",
-    "Logo not found: static/LAABio.png"
-)
-
-# 2) DBsimilarity logo
-safe_sidebar_image(
-    STATIC_DIR / "DBsimilarity.png",
-    "Logo not found: static/DBsimilarity.png"
-)
+LOGO_DBsimilarity_PATH = STATIC_DIR / "DBsimilarity.png"
+try:
+    logo = Image.open(LOGO_DBsimilarity_PATH)  # raises if missing
+    st.sidebar.image(logo, use_container_width=True)
+except FileNotFoundError:
+    st.sidebar.warning("Logo not found at static/DBsimilarity.png")
 
 st.markdown(
     """
@@ -481,7 +451,7 @@ up_annot   = st.sidebar.file_uploader("Annotated table(s) (CSV/TXT) — multiple
 
 st.sidebar.header("2) Column mapping")
 col_smiles = st.sidebar.text_input("SMILES column name (targets/annotated)", value="SMILES")
-col_key    = st.sidebar.text_input("Key column to merge (e.g., file_path / name)", value="file_path")
+col_key    = st.sidebar.text_input("Key column to merge (e.g., file_path / name)", value="InchiKey")
 
 st.sidebar.header("3) Feature toggles")
 run_massql   = st.sidebar.checkbox("Build MassQL (MS1/MS2)", value=True)
@@ -652,6 +622,15 @@ if not df_target.empty and sm_col:
     if sm_col != col_smiles:
         df_target = df_target.rename(columns={sm_col: col_smiles})
     st.success(f"Targets cleaned: {len(df0)} rows → {len(df_target)} unique SMILES.")
+    
+if not df_target.empty:
+    GLOBAL_INCHI_LIST = df_target.get(
+        "InchiKey",
+        pd.Series([f"mol_{i+1}" for i in range(len(df_target))])
+    ).astype(str).tolist()
+else:
+    GLOBAL_INCHI_LIST = []
+
 
 # ==============================================================================================
 # ---------- Build merged_df early (even if only one table has the key) ----------
@@ -1110,102 +1089,105 @@ if run_similarity and not df_target.empty:
     sim_thresh = st.slider("Edge threshold (similarity)", 0.0, 1.0, 0.85, 0.01, key="sim_thresh_main")
 
     # compute similarities and graph
-    sm_col = resolve_smiles_col(df_target, col_smiles)
-    if not sm_col:
-        st.error("SMILES column not found in targets.")
+    sm_col = col_smiles   # we already normalized earlier
+    if sm_col not in df_target.columns:
+        st.error("SMILES column not found in targets (after normalization).")
         st.stop()
 
     smiles_list = df_target[sm_col].astype(str).tolist()
     inchi_list  = df_target.get("InchiKey", pd.Series([f"mol_{i+1}" for i in range(len(smiles_list))])).astype(str).tolist()
+    fps = fingerprints(smiles_list, radius=2, nBits=2048)
+    sim_df = pairwise_similarity(inchi_list, fps, metric=sim_metric)
 
-    # --- NEW: guard for missing RDKit ---
-    if not RDKit_AVAILABLE:
-        st.warning("RDKit is not available on this Streamlit environment, so the similarity "
-                   "network (Morgan fingerprints) is disabled. Run locally with RDKit to enable it.")
-    else:
-        fps = fingerprints(smiles_list, radius=2, nBits=2048)
-        sim_df = pairwise_similarity(inchi_list, fps, metric=sim_metric)
+    # 1) build Murcko scaffolds for each compound
+    scaffolds = [murcko_from_smiles(s) for s in smiles_list]
+    scaf_series = pd.Series(scaffolds, index=inchi_list, name="MurckoScaffold")
 
-        # edges and graph
-        edges = sim_df[sim_df["CORRELATION"] >= float(sim_thresh)].copy()
-        G = nx.from_pandas_edgelist(edges, "SOURCE", "TARGET")
-        nodes_all = set(inchi_list)
-        G.add_nodes_from(nodes_all - set(G.nodes()))
+    # 1b) ensure UNIQUE index (this is what fixes your error)
+    scaf_series = scaf_series[~scaf_series.index.duplicated(keep="first")]
 
-        # layout + traces
-        pos = nx.spring_layout(G, seed=42, k=0.8)
-        x, y, text, deg = [], [], [], []
-        for n in G.nodes():
-            xx, yy = pos[n]
-            x.append(xx); y.append(yy)
-            text.append(n)
-            deg.append(G.degree[n])
-        node_trace = go.Scatter(
-            x=x,
-            y=y,
-            text=text,
-            mode='markers',
-            marker=dict(size=[6 + 2 * d for d in deg])
+    # 2) edges
+    edges = sim_df[sim_df["CORRELATION"] >= float(sim_thresh)].copy()
+
+    # 3) map scaffolds
+    edges["SCAFFOLD_SRC"] = edges["SOURCE"].map(scaf_series)
+    edges["SCAFFOLD_DST"] = edges["TARGET"].map(scaf_series)
+
+    # 4) define the function (NO stray return above this!)
+    def _same_scaf(row):
+        s1 = row.get("SCAFFOLD_SRC")
+        s2 = row.get("SCAFFOLD_DST")
+        if pd.isna(s1) or pd.isna(s2):
+            return 0
+        return int(str(s1) == str(s2))
+
+    # 5) apply
+    edges["SAME_SCAFFOLD"] = edges.apply(_same_scaf, axis=1)
+
+    # ---- network ----
+    G = nx.from_pandas_edgelist(edges, "SOURCE", "TARGET")
+    nodes_all = set(inchi_list)
+    G.add_nodes_from(nodes_all - set(G.nodes()))
+
+    pos = nx.spring_layout(G, seed=42, k=0.8)
+    x, y, text, deg = [], [], [], []
+    for n in G.nodes():
+        xx, yy = pos[n]
+        x.append(xx); y.append(yy)
+        text.append(n)
+        deg.append(G.degree[n])
+    node_trace = go.Scatter(x=x, y=y, text=text, mode='markers',
+                            marker=dict(size=[6+2*d for d in deg]))
+    xe, ye = [], []
+    for u, v in G.edges():
+        xe += [pos[u][0], pos[v][0], None]
+        ye += [pos[u][1], pos[v][1], None]
+    edge_trace = go.Scatter(x=xe, y=ye, mode='lines', hoverinfo='none')
+    fig_net = go.Figure(data=[edge_trace, node_trace])
+    fig_net.update_layout(title="Similarity network",
+                          showlegend=False,
+                          margin=dict(l=0, r=0, t=40, b=0))
+
+    # data for downloads
+    edges_csv_blob = edges.to_csv(sep=";", index=False).encode("utf-8")
+    net_html_blob = pio.to_html(fig_net, include_plotlyjs='cdn', full_html=True).encode("utf-8")
+
+    G2 = nx.from_pandas_edgelist(edges, "SOURCE", "TARGET")
+    iso = list(nodes_all - set(G2.nodes()))
+    df_iso = df_target[df_target["InchiKey"].isin(iso)] if "InchiKey" in df_target.columns else pd.DataFrame({"InchiKey": iso})
+    iso_csv_blob = df_iso.to_csv(index=False).encode("utf-8")
+
+    with st.expander("Show network and sample rows", expanded=False):
+        show_df(sim_df.head(10), caption="Similarity rows (sample)")
+        st.caption(f"Edges ≥ {sim_thresh:.2f}: {len(edges)}  |  Isolated nodes: {len(iso)}")
+        st.plotly_chart(fig_net, use_container_width=True)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.download_button(
+            f"Download edges CSV (≥ {sim_thresh:.2f})",
+            data=edges_csv_blob,
+            file_name=f"DB_compounds_Similarity_{sim_thresh:.2f}.csv",
+            key="dl_edges_csv_main"
         )
-        xe, ye = [], []
-        for u, v in G.edges():
-            xe += [pos[u][0], pos[v][0], None]
-            ye += [pos[u][1], pos[v][1], None]
-        edge_trace = go.Scatter(x=xe, y=ye, mode='lines', hoverinfo='none')
-        fig_net = go.Figure(data=[edge_trace, node_trace])
-        fig_net.update_layout(
-            title="Similarity network",
-            showlegend=False,
-            margin=dict(l=0, r=0, t=40, b=0)
+    with c2:
+        st.download_button(
+            "Download network HTML",
+            data=net_html_blob,
+            file_name="similarity_network.html",
+            key="dl_network_html_main"
+        )
+    with c3:
+        st.download_button(
+            "Download isolated_nodes.csv",
+            data=iso_csv_blob,
+            file_name="isolated_nodes.csv",
+            key="dl_iso_csv_main"
         )
 
-        # data for downloads
-        edges_csv_blob = edges.to_csv(sep=";", index=False).encode("utf-8")
-        net_html_blob = pio.to_html(fig_net, include_plotlyjs='cdn', full_html=True).encode("utf-8")
-
-        G2 = nx.from_pandas_edgelist(edges, "SOURCE", "TARGET")
-        iso = list(nodes_all - set(G2.nodes()))
-        df_iso = (
-            df_target[df_target["InchiKey"].isin(iso)]
-            if "InchiKey" in df_target.columns
-            else pd.DataFrame({"InchiKey": iso})
-        )
-        iso_csv_blob = df_iso.to_csv(index=False).encode("utf-8")
-
-        # put the heavy preview inside a dropdown
-        with st.expander("Show network and sample rows", expanded=False):
-            show_df(sim_df.head(10), caption="Similarity rows (sample)")
-            st.caption(f"Edges ≥ {sim_thresh:.2f}: {len(edges)}  |  Isolated nodes: {len(iso)}")
-            st.plotly_chart(fig_net, use_container_width=True)
-
-        # keep download buttons outside the dropdown (always visible)
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.download_button(
-                f"Download edges CSV (≥ {sim_thresh:.2f})",
-                data=edges_csv_blob,
-                file_name=f"DB_compounds_Similarity_{sim_thresh:.2f}.csv",
-                key="dl_edges_csv_main"
-            )
-        with c2:
-            st.download_button(
-                "Download network HTML",
-                data=net_html_blob,
-                file_name="similarity_network.html",
-                key="dl_network_html_main"
-            )
-        with c3:
-            st.download_button(
-                "Download isolated_nodes.csv",
-                data=iso_csv_blob,
-                file_name="isolated_nodes.csv",
-                key="dl_iso_csv_main"
-            )
-
-        # also expose in the bottom 'Downloads' section
-        exports[f"DB_compounds_Similarity_{sim_thresh:.2f}.csv"] = edges_csv_blob
-        exports["similarity_network.html"] = net_html_blob
-        exports["isolated_nodes.csv"] = iso_csv_blob
+    exports[f"DB_compounds_Similarity_{sim_thresh:.2f}.csv"] = edges_csv_blob
+    exports["similarity_network.html"] = net_html_blob
+    exports["isolated_nodes.csv"] = iso_csv_blob
 
     
 # ==============================================================================================
@@ -1317,7 +1299,161 @@ st.markdown("""
 If the added (or any added) csv file has any caracteristics that is worth mentions, we should select the right Column header to create a wordcloud"
 """)
 
+# ==============================================================================================
 
+if not df_target.empty and (col_smiles in df_target.columns):
+    smiles_list_global = df_target[col_smiles].astype(str).tolist()
+
+    # prefer real InchiKey, fallback to mol_1, mol_2, ...
+    inchi_list_global = df_target.get(
+        "InchiKey",
+        pd.Series([f"mol_{i+1}" for i in range(len(smiles_list_global))])
+    ).astype(str).tolist()
+
+    GLOBAL_INCHI_LIST = inchi_list_global  # <- save globally
+
+    # compute Murcko for each SMILES
+    scaffolds_global = [murcko_from_smiles(s) for s in smiles_list_global]
+
+    # single, canonical scaffold series (InchiKey -> Murcko)
+    scaf_series = pd.Series(
+        scaffolds_global,
+        index=inchi_list_global,
+        name="MurckoScaffold"
+    )
+
+    # drop duplicated InchiKeys just in case
+    scaf_series = scaf_series[~scaf_series.index.duplicated(keep="first")]
+else:
+    # nothing to scaffold
+    GLOBAL_INCHI_LIST = []
+    scaf_series = pd.Series(dtype="object")
+
+
+# ==========================================================================================
+# ----------- Scaffold (Bemis–Murcko) network ----------
+
+# if for some reason scaf_series was not built above, rebuild here
+if 'scaf_series' not in locals() or scaf_series is None or scaf_series.empty:
+    if not df_target.empty and (col_smiles in df_target.columns):
+        smiles_tmp = df_target[col_smiles].astype(str).tolist()
+        inchi_tmp = df_target.get(
+            "InchiKey",
+            pd.Series([f"mol_{i+1}" for i in range(len(smiles_tmp))])
+        ).astype(str).tolist()
+        scaffolds_tmp = [murcko_from_smiles(s) for s in smiles_tmp]
+        scaf_series = pd.Series(scaffolds_tmp, index=inchi_tmp, name="MurckoScaffold")
+        scaf_series = scaf_series[~scaf_series.index.duplicated(keep="first")]
+        GLOBAL_INCHI_LIST = inchi_tmp
+    else:
+        scaf_series = pd.Series(dtype="object")
+        GLOBAL_INCHI_LIST = []
+
+
+st.markdown("---")
+st.subheader("Scaffold network (Bemis–Murcko)")
+st.caption("Nodes = compounds; edges = same Murcko scaffold")
+
+# only run if we actually have targets + scaffolds
+if (not df_target.empty) and (not scaf_series.empty):
+
+    # group InchiKeys by scaffold
+    scaf_to_nodes: Dict[str, List[str]] = {}
+    for ik, scaf in scaf_series.items():
+        if not scaf:   # None or empty
+            continue
+        scaf_to_nodes.setdefault(scaf, []).append(ik)
+
+    # build edges: fully connect compounds that share the same scaffold
+    scaf_edges_rows = []
+    for scaf, nodes in scaf_to_nodes.items():
+        if len(nodes) < 2:
+            continue
+        # clique
+        for i in range(len(nodes)):
+            for j in range(i + 1, len(nodes)):
+                scaf_edges_rows.append((nodes[i], nodes[j], scaf))
+
+    scaf_edges_df = pd.DataFrame(scaf_edges_rows, columns=["SOURCE", "TARGET", "SCAFFOLD"])
+    st.caption(f"Scaffold edges: {len(scaf_edges_df)}")
+
+    # make graph
+    if not scaf_edges_df.empty:
+        G_scaf = nx.from_pandas_edgelist(scaf_edges_df, "SOURCE", "TARGET")
+    else:
+        G_scaf = nx.Graph()
+
+    # keep isolated nodes (those that had scaffold but no partner)
+    # use GLOBAL_INCHI_LIST we created above
+    if GLOBAL_INCHI_LIST:
+        G_scaf.add_nodes_from(set(GLOBAL_INCHI_LIST) - set(G_scaf.nodes()))
+
+    # layout
+    pos_scaf = nx.spring_layout(G_scaf, seed=42, k=0.8)
+    x_s, y_s, text_s, deg_s = [], [], [], []
+    for n in G_scaf.nodes():
+        xx, yy = pos_scaf[n]
+        x_s.append(xx); y_s.append(yy)
+        text_s.append(n)
+        deg_s.append(G_scaf.degree[n])
+
+    node_trace_scaf = go.Scatter(
+        x=x_s, y=y_s,
+        text=text_s,
+        mode='markers',
+        marker=dict(size=[6 + 2 * d for d in deg_s]),
+        name="compounds"
+    )
+
+    xe_s, ye_s = [], []
+    for u, v in G_scaf.edges():
+        xe_s += [pos_scaf[u][0], pos_scaf[v][0], None]
+        ye_s += [pos_scaf[u][1], pos_scaf[v][1], None]
+
+    edge_trace_scaf = go.Scatter(
+        x=xe_s, y=ye_s,
+        mode='lines',
+        hoverinfo='none',
+        name="same scaffold"
+    )
+
+    fig_scaf = go.Figure(data=[edge_trace_scaf, node_trace_scaf])
+    fig_scaf.update_layout(
+        title="Bemis–Murcko scaffold network",
+        showlegend=False,
+        margin=dict(l=0, r=0, t=40, b=0)
+    )
+
+    with st.expander("Show scaffold network", expanded=False):
+        st.plotly_chart(fig_scaf, use_container_width=True)
+        show_df(scaf_edges_df, caption="Scaffold edges (sample)", rows=2)
+
+    # downloads
+    scaf_csv_blob = scaf_edges_df.to_csv(sep=";", index=False).encode("utf-8")
+    scaf_html_blob = pio.to_html(fig_scaf, include_plotlyjs='cdn', full_html=True).encode("utf-8")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button(
+            "Download scaffold edges CSV",
+            data=scaf_csv_blob,
+            file_name="DB_compounds_ScaffoldNetwork.csv",
+            key="dl_scaf_edges_csv"
+        )
+    with c2:
+        st.download_button(
+            "Download scaffold network HTML",
+            data=scaf_html_blob,
+            file_name="scaffold_network.html",
+            key="dl_scaf_network_html"
+        )
+
+    # also register in global exports
+    exports["DB_compounds_ScaffoldNetwork.csv"] = scaf_csv_blob
+    exports["scaffold_network.html"] = scaf_html_blob
+
+else:
+    st.info("No scaffold data available (upload targets with SMILES / InchiKey first).")
 
 # ==============================================================================================
 # ---------- Descriptors + PCA / Dendrogram / t-SNE ----------
@@ -1335,150 +1471,148 @@ def sanitize_matrix_for_modeling(df_vals: pd.DataFrame) -> pd.DataFrame:
     X = X.loc[:, variances > 0.0]
     return X
 
-sm_col = resolve_smiles_col(df_target, col_smiles)
-# Descriptors + PCA / Dendrogram / t-SNE
-if run_descriptors and not df_target.empty and sm_col:
+sm_col = col_smiles   # we already enforced/renamed earlier
+if run_descriptors and not df_target.empty and (sm_col in df_target.columns):
     st.subheader("Descriptors → PCA / Dendrogram / t-SNE")
 
-    # 1) guard: mordred may not be installed on Streamlit Cloud
-    if not MORDRED_AVAILABLE:
-        st.warning(
-            "Mordred is not available in this environment. "
-            "Run locally or install `mordred` to enable descriptors."
-        )
+    smiles = df_target[sm_col].astype(str).tolist()
+
+
+    smiles = df_target[sm_col].astype(str).tolist()
+    mols = [mol_from_smiles(s) for s in smiles]
+
+    with st.spinner("Calculating Mordred descriptors (this may take a while)…"):
+        try:
+            calc = Calculator(descriptors, ignore_3D=not use_3d)
+            df_desc = calc.pandas(mols)
+        except Exception as e:
+            st.error(f"Mordred failed: {e}")
+            df_desc = pd.DataFrame()
+
+    if df_desc.empty:
+        st.info("No descriptors available (empty table). Skipping PCA / Dendrogram / t-SNE.")
     else:
-        # ---- everything below only runs when mordred is available ----
-        smiles = df_target[sm_col].astype(str).tolist()
-        mols = [mol_from_smiles(s) for s in smiles]
+        # 1) Sanitize → numeric, finite, non-constant
+        df_vals_raw = df_desc.select_dtypes(include=[np.number])
+        df_vals = sanitize_matrix_for_modeling(df_vals_raw)
 
-        with st.spinner("Calculating Mordred descriptors (this may take a while)…"):
-            try:
-                calc = Calculator(descriptors, ignore_3D=not use_3d)
-                df_desc = calc.pandas(mols)
-            except Exception as e:
-                st.error(f"Mordred failed: {e}")
-                df_desc = pd.DataFrame()
+        # Export cleaned descriptors (useful for debugging)
+        try:
+            exports["descriptors_clean.csv"] = df_vals.to_csv(index=False).encode("utf-8")
+        except Exception:
+            pass
 
-        if df_desc.empty:
-            st.info("No descriptors available (empty table). Skipping PCA / Dendrogram / t-SNE.")
+        # 2) (Optional) cap features to top-k by variance BEFORE scaling
+        k = min(1000, df_vals.shape[1])  # expose in sidebar later if you want
+        if k < df_vals.shape[1]:
+            topk = df_vals.var().sort_values(ascending=False).index[:k]
+            df_vals = df_vals[topk]
+
+        # 3) Re-evaluate shapes AFTER capping
+        n_samples, n_features = df_vals.shape
+        st.caption(f"Descriptors after cleaning: {n_samples} samples × {n_features} features")
+
+        if n_samples < 2 or n_features < 1:
+            st.info("Not enough data for PCA/Dendrogram/t-SNE (need ≥2 samples and ≥1 feature).")
         else:
-            # 1) Sanitize → numeric, finite, non-constant
-            df_vals_raw = df_desc.select_dtypes(include=[np.number])
-            df_vals = sanitize_matrix_for_modeling(df_vals_raw)
-
-            # Export cleaned descriptors (useful for debugging)
+            # 4) Standardize ON the final df_vals (use everywhere below)
             try:
-                exports["descriptors_clean.csv"] = df_vals.to_csv(index=False).encode("utf-8")
-            except Exception:
-                pass
+                X = StandardScaler(with_mean=True, with_std=True).fit_transform(df_vals.values)
+            except Exception as e:
+                st.warning(f"Standardization failed: {e}")
+                X = df_vals.values  # fallback
 
-            # 2) (Optional) cap features to top-k by variance BEFORE scaling
-            k = min(1000, df_vals.shape[1])
-            if k < df_vals.shape[1]:
-                topk = df_vals.var().sort_values(ascending=False).index[:k]
-                df_vals = df_vals[topk]
+            # Optional IDs for hover labels (aligns with df_target order)
+            ids = df_target.get("InchiKey", pd.Series([f"mol_{i+1}" for i in range(n_samples)])).astype(str).tolist()
 
-            # 3) Re-evaluate shapes AFTER capping
-            n_samples, n_features = df_vals.shape
-            st.caption(f"Descriptors after cleaning: {n_samples} samples × {n_features} features")
+            # ----------------- PCA (2D) -----------------
+            try:
+                ncomp = int(min(2, n_features, n_samples))
+                if ncomp >= 1:
+                    # Fit PCA
+                    pca = PCA(n_components=ncomp, svd_solver="auto")
+                    scores = pca.fit_transform(X)
 
-            if n_samples < 2 or n_features < 1:
-                st.info("Not enough data for PCA/Dendrogram/t-SNE (need ≥2 samples and ≥1 feature).")
-            else:
-                # 4) Standardize
-                try:
-                    X = StandardScaler(with_mean=True, with_std=True).fit_transform(df_vals.values)
-                except Exception as e:
-                    st.warning(f"Standardization failed: {e}")
-                    X = df_vals.values  # fallback
+                    # ----- Optional color by in_df* flags from merged_df -----
+                    pca_color = None
+                    merged_for_colors = st.session_state.get("merged_df", pd.DataFrame())
+                    if not merged_for_colors.empty:
+                        import re as _re
+                        in_cols_all = [c for c in merged_for_colors.columns if _re.match(r"^in_df\d+$", c)]
 
-                # IDs for hover
-                ids = df_target.get(
-                    "InchiKey",
-                    pd.Series([f"mol_{i+1}" for i in range(n_samples)])
-                ).astype(str).tolist()
-
-                # ----------------- PCA (2D) -----------------
-                try:
-                    ncomp = int(min(2, n_features, n_samples))
-                    if ncomp >= 1:
-                        pca = PCA(n_components=ncomp, svd_solver="auto")
-                        scores = pca.fit_transform(X)
-
-                        # optional coloring by in_df... (your original logic)
-                        pca_color = None
-                        merged_for_colors = st.session_state.get("merged_df", pd.DataFrame())
-                        if not merged_for_colors.empty:
-                            import re as _re
-                            in_cols_all = [c for c in merged_for_colors.columns if _re.match(r"^in_df\d+$", c)]
-
-                            show_constant = st.checkbox(
-                                "Show all in_df… columns (even if constant on PCA set)",
-                                value=False,
-                                key="pca_show_constant_cols",
-                            )
-
-                            join_key = "InchiKey" if "InchiKey" in merged_for_colors.columns else (
-                                col_key if (col_key in merged_for_colors.columns and col_key in df_target.columns) else None
-                            )
-
-                            if join_key is not None and in_cols_all:
-                                left = pd.DataFrame({join_key: df_target.get(join_key, pd.Series(ids)).values})
-                                right = merged_for_colors[[join_key] + in_cols_all].drop_duplicates(subset=[join_key])
-                                merged_colors = left.merge(right, on=join_key, how="left")
-
-                                varying_cols = []
-                                for c in in_cols_all:
-                                    vals = merged_colors[c].fillna(0).astype(int)
-                                    if vals.nunique() > 1:
-                                        varying_cols.append(c)
-
-                                selectable = in_cols_all if show_constant else varying_cols
-                                if selectable:
-                                    default_idx = selectable.index("in_df2") if "in_df2" in selectable else 0
-                                    color_col = st.selectbox(
-                                        "Color PCA by",
-                                        selectable,
-                                        index=default_idx,
-                                        key="pca_color_in_df"
-                                    )
-                                    pca_color = merged_colors[color_col].fillna(0).astype(int).astype(str)
-                                else:
-                                    st.info("No `in_df…` column varies across the PCA points.")
-                            else:
-                                st.caption("Could not align colors for PCA (no common key or no `in_df…` columns).")
-
-                        if pca_color is not None:
-                            fig_pca = px.scatter(
-                                x=scores[:, 0],
-                                y=(scores[:, 1] if ncomp > 1 else np.zeros_like(scores[:, 0])),
-                                title=f"PCA ({ncomp} component{'s' if ncomp>1 else ''})",
-                                labels={"x": "PC1", "y": ("PC2" if ncomp > 1 else "PC2 (zero)")},
-                                hover_name=ids,
-                                color=pca_color
-                            )
-                        else:
-                            fig_pca = px.scatter(
-                                x=scores[:, 0],
-                                y=(scores[:, 1] if ncomp > 1 else np.zeros_like(scores[:, 0])),
-                                title=f"PCA ({ncomp} component{'s' if ncomp>1 else ''})",
-                                labels={"x": "PC1", "y": ("PC2" if ncomp > 1 else "PC2 (zero)")},
-                                hover_name=ids
-                            )
-
-                        st.plotly_chart(fig_pca, use_container_width=True)
-
-                        exports["pca_scores.csv"] = (
-                            pd.DataFrame(scores[:, :max(1, ncomp)], columns=["PC1", "PC2"][:ncomp])
-                            .to_csv(index=False).encode()
+                        # Let user include constant columns so they can pick in_df1 if it's all 1s
+                        show_constant = st.checkbox(
+                            "Show all in_df… columns (even if constant on PCA set)",
+                            value=False,
+                            key="pca_show_constant_cols",
+                            help="If off, only columns that vary (both 0 and 1) are listed."
                         )
-                        exports["pca.html"] = pio.to_html(fig_pca, include_plotlyjs='cdn', full_html=True).encode()
+
+                        # Join key: prefer InchiKey, else col_key if present in both
+                        join_key = "InchiKey" if "InchiKey" in merged_for_colors.columns else (
+                            col_key if (col_key in merged_for_colors.columns and col_key in df_target.columns) else None
+                        )
+
+                        if join_key is not None and in_cols_all:
+                            # Align flags to PCA order
+                            left  = pd.DataFrame({join_key: df_target.get(join_key, pd.Series(ids)).values})
+                            right = merged_for_colors[[join_key] + in_cols_all].drop_duplicates(subset=[join_key])
+                            merged_colors = left.merge(right, on=join_key, how="left")
+
+                            # Which columns vary on this subset?
+                            varying_cols = []
+                            for c in in_cols_all:
+                                vals = merged_colors[c].fillna(0).astype(int)
+                                if vals.nunique() > 1:
+                                    varying_cols.append(c)
+
+                            selectable = in_cols_all if show_constant else varying_cols
+                            if selectable:
+                                default_idx = selectable.index("in_df2") if "in_df2" in selectable else 0
+                                color_col = st.selectbox("Color PCA by", selectable, index=default_idx, key="pca_color_in_df")
+                                pca_color = merged_colors[color_col].fillna(0).astype(int).astype(str)  # "0"/"1"
+                                if color_col == "in_df1" and not show_constant and "in_df1" not in varying_cols:
+                                    st.caption("Note: `in_df1` is constant (=1) on the PCA set; enable the checkbox above to select it.")
+                            else:
+                                st.info(
+                                    "No `in_df…` column varies across the PCA points. "
+                                    "This usually happens because PCA uses only `df_target` rows and `in_df1` flags membership in `df_target` (all 1). "
+                                    "Turn on the checkbox to select constant columns, or pick another column like `in_df2`."
+                                )
+                        else:
+                            st.caption("Could not align colors for PCA (no common key or no `in_df…` columns).")
+
+                    # ----- Create PCA scatter (with/without color) -----
+                    if pca_color is not None:
+                        fig_pca = px.scatter(
+                            x=scores[:, 0],
+                            y=(scores[:, 1] if ncomp > 1 else np.zeros_like(scores[:, 0])),
+                            title=f"PCA ({ncomp} component{'s' if ncomp>1 else ''})",
+                            labels={"x": "PC1", "y": ("PC2" if ncomp > 1 else "PC2 (zero)")},
+                            hover_name=ids,
+                            color=pca_color
+                        )
                     else:
-                        st.info("PCA skipped: fewer than 1 usable component.")
-                except Exception as e:
-                    st.warning(f"PCA failed: {e}")
+                        fig_pca = px.scatter(
+                            x=scores[:, 0],
+                            y=(scores[:, 1] if ncomp > 1 else np.zeros_like(scores[:, 0])),
+                            title=f"PCA ({ncomp} component{'s' if ncomp>1 else ''})",
+                            labels={"x": "PC1", "y": ("PC2" if ncomp > 1 else "PC2 (zero)")},
+                            hover_name=ids
+                        )
 
+                    st.plotly_chart(fig_pca, use_container_width=True, #key="pca_chart"
+                    )
 
+                    # Exports
+                    exports["pca_scores.csv"] = (
+                        pd.DataFrame(scores[:, :max(1, ncomp)], columns=["PC1","PC2"][:ncomp]).to_csv(index=False).encode()
+                    )
+                    exports["pca.html"] = pio.to_html(fig_pca, include_plotlyjs='cdn', full_html=True).encode()
+                else:
+                    st.info("PCA skipped: fewer than 1 usable component.")
+            except Exception as e:
+                st.warning(f"PCA failed: {e}")
 
 
             # ----------------- Dendrogram: view or save (HTML/PNG) -----------------
@@ -1565,7 +1699,8 @@ if run_descriptors and not df_target.empty and sm_col:
                     st.pyplot(fig, clear_figure=False)
 
                     # --- Downloads ---
-                    if MPLD3_AVAILABLE:
+                    # HTML (interactive) – only if mpld3 is available
+                    if "mpld3" in globals() and HAS_MPLD3:
                         html_str = mpld3.fig_to_html(fig)
                         st.download_button(
                             "⬇️ Download dendrogram (HTML, interactive)",
@@ -1573,22 +1708,25 @@ if run_descriptors and not df_target.empty and sm_col:
                             file_name="dendrogram.html",
                             mime="text/html"
                         )
+                        # also register in exports
                         exports["dendrogram.html"] = html_str.encode("utf-8")
                     else:
-                        st.info("`mpld3` is not installed in this environment. Install it to export interactive HTML.")
+                        st.caption("Install `mpld3` to enable interactive HTML export for the dendrogram.")
 
-
+                    # PNG – always
                     png_buf = io.BytesIO()
                     fig.savefig(png_buf, format="png", dpi=dpi, bbox_inches="tight")
                     png_buf.seek(0)
                     st.download_button(
                         "⬇️ Download dendrogram (PNG)",
-                        data=png_buf, file_name="dendrogram.png", mime="image/png"
+                        data=png_buf,
+                        file_name="dendrogram.png",
+                        mime="image/png"
                     )
 
                     # Sync to Exports
-                    exports["dendrogram.html"] = html_str.encode("utf-8")
-                    exports["dendrogram.png"]  = png_buf.getvalue()
+                    exports["dendrogram.png"] = png_buf.getvalue()
+
 
             # ----------------- t-SNE -----------------
             try:
@@ -1636,6 +1774,10 @@ if run_descriptors and not df_target.empty and sm_col:
             except Exception as e:
                 st.warning(f"t-SNE failed: {e}")
 
+else:
+    if run_descriptors:
+        st.warning(f"Column '{col_smiles}' not found in targets for descriptor calculation.")
+
 
 # ==============================================================================================
 # ---------- Exports section ----------
@@ -1659,22 +1801,3 @@ st.markdown(
     - Descriptors can be heavy; enable only if needed. All plots are downloadable (HTML/CSV where applicable).
     """
 )
-
-# --------------------------
-# requirements.txt suggestion:
-# streamlit
-# rdkit-pypi
-# pandas
-# numpy
-# plotly
-# networkx
-# mordred
-# scikit-learn
-# scipy
-# matplotlib
-
-
-
-
-
-
